@@ -1,6 +1,12 @@
 sshd.js
 =======
 
+__PLEASE DO NOT USE THIS CODE__
+
+__IT IS A WORK IN PROGRESS__
+
+__HOPEFULLY, IT WILL BE ALPHA QUALITY BY THE END OF JUNE__
+
 Secure Shell server written in Javascript using only the NodeJS standard library.
 
 Currently only supports Diffie-Huffman SHA256, which most desktop SSH clients support. Mobile

@@ -1,0 +1,24 @@
+{
+  "name"           : "sshd"
+, "version"        : "0.0.2"
+, "description"    : "Secure Shell server written in Javascript using only the NodeJS standard library."
+, "author": {
+    "name"           : ""
+  , "email"          : ""
+  }
+, "repository": {
+    "type"         : "git",
+    "url"          : "https://github.com/mrose/node-sshd.git"
+  }
+, "bugs"           : {
+    "url"          : "https://github.com/mrose/node-sshd/issues"
+  }
+, "keywords"       : [ "sshd" ]
+, "main"           : "./index.js"
+, "engines": {
+    "node"         : ">=0.10"
+  }
+, "dependencies"   : {
+  }
+, "readmeFilename" : "README.md"
+}
