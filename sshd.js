@@ -27,7 +27,8 @@ var DEFAULT_LOGGER = {
 
 
 
-/* this is an example. it will always SUCCEED authorization to the 'ssh-userauth' service and FAIL otherwise.
+/* this is an example. it will always SUCCEED authorization to the 'ssh-userauth' and 'ssh-connection' services,
+    and FAIL otherwise.
 
    you MAY wish to define your own authorization rules in your module and pass a pointer to this module.
 
@@ -42,6 +43,9 @@ var DEFAULT_LOGGER = {
 
 var DEFAULT_AUTHORIZER = {
     'ssh-userauth'         : function(service) {/* jshint unused: false */
+                               return true;
+                             }
+  , 'ssh-connection'       : function(service) {/* jshint unused: false */
                                return true;
                              }
 };
@@ -68,7 +72,7 @@ var DEFAULT_AUTHORIZER = {
 
 var DEFAULT_AUTHENTICATOR = {
     none                   : function(user, service, method, params) {/* jshint unused: false */
-                               return { failure: true, choices: [ 'publickey', 'keyboard-interactive' ] };
+                               return { failure: true, choices: [ 'publickey', 'password', 'keyboard-interactive' ] };
                              }
 
   , 'keyboard-interactive' : function(user, service, method, params) {/* jshint unused: false */
@@ -126,7 +130,7 @@ var DEFAULT_CHANNELIZER = function(chan, event, params) {
             handler(chan, 'data', d);
           }).setEncoding('utf8');
           proc.stderr.on('data', function(d) {
-            handler(chan, 'data', d);
+            handler(chan, 'extended', d);
           }).setEncoding('utf8');
           proc.on('exit', function(code, signal) {
             handler(chan, 'end', { code: code, signal: signal });
@@ -226,7 +230,7 @@ net.createServer(function (conn) {
 
   var getPacket = function (packet) {
     var type = packet.getType();
-    var chan, channel, code, data, dhflags, e, i, method, msg, params, sha, wantReply;
+    var chan, channel, code, data, dhflags, e, i, method, msg, params, requestName, sha, wantReply;
 
     var keyize = function (salt) {
       // TODO: dh.secret might need to be encoded for SSH
@@ -291,7 +295,7 @@ net.createServer(function (conn) {
       }
 
       if (!!result.info) {
-        return sendPayload(result.info.splice(0, 0, { byte : 60 }));                // SSH_MSG_USERAUTH_60
+        return sendPayload(result.info.splice(0, 0, { byte : 60 }));                // SSH_MSG_USERAUTH_INFO_REQUEST
       }
 
       if (!result.prompts) {
@@ -316,16 +320,18 @@ net.createServer(function (conn) {
       var result;
 
       var handler = function(event, params) {
-        var d;
+        var d, type;
 
         if (!channels[chan]) return;
         params = params || {};
 
         switch (event) {
           case 'data':
+          case 'extended':
             d = params.data || '';
+            type = (event === 'data') ? 94 : 95;                                    // SSH_MSG_CHANNEL_[EXTENDED_]DATA
             for ( d = d.replace(/\n/g, '\r\n'); d.length > 0; d = d.slice(50)) {
-              sendPayload([ { byte   : 94          }                                // SSH_MSG_CHANNEL_DATA
+              sendPayload([ { byte   : type        }
                           , { uint32 : chan        }
                           , d.slice(0, 50)
                           ]);
@@ -493,7 +499,9 @@ net.createServer(function (conn) {
             break;
 
           case 'password':
-            params = { password   : packet.readString() };
+            params = { signed     : packet.readBool()
+                     , password   : packet.readString()
+                     };
             break;
 
           case 'publickey':
@@ -526,11 +534,11 @@ net.createServer(function (conn) {
 
 // SSH_MSG_GLOBAL_REQUEST
       case 80:
-        type = packet.readString();
+        requestName = packet.readString();
         wantReply = packet.readBool();
-        logger.debug('global', { type: type, wantReply: wantReply });
+        logger.debug('global', { requestName: requestName, wantReply: wantReply });
 
-        if (type == 'keepalive@openssh.com') {
+        if (requestName == 'keepalive@openssh.com') {
           sendPayload([ { byte : 81 } ]);                                           // SSH_MSG_REQUEST_SUCCESS
           break;
         }
@@ -622,13 +630,20 @@ net.createServer(function (conn) {
         if (!!channels[chan]) (channels[chan])(chan, 'data', data);
         break;
 
+// SSH_MSG_CHANNEL_DATA
+      case 95:
+        chan = packet.readUInt32();
+        type = packet.readUInt32();    // ignored for now....
+        data = packet.readString();
+        if (!!channels[chan]) (channels[chan])(chan, 'data', data);
+        break;
+
 //   0 SSH_MSG_UNKNOWN
 //   2 SSH_MSG_IGNORE
 //   3 SSH_MSG_UNIMPLEMENTED
 //   4 SSH_MSG_DEBUG
 //  32 SSH_MSG_KEX_DH_GEX_INIT
 //  33 SSH_MSG_KEX_DH_GEX_REPLY
-//  95 SSH_MSG_CHANNEL_EXTENDED_DATA
 // 100 SSH_MSG_CHANNEL_FAILURE
       default:
         logger.warning('packet', { type: type, payload: packet.payload.toString() });
