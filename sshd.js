@@ -72,7 +72,7 @@ var DEFAULT_AUTHORIZER = {
 
 var DEFAULT_AUTHENTICATOR = {
     none                   : function(user, service, method, params) {/* jshint unused: false */
-                               return { failure: true, choices: [ 'publickey', 'password', 'keyboard-interactive' ] };
+                               return { failure: true, choices: [ 'publickey', 'keyboard-interactive', 'password' ] };
                              }
 
   , 'keyboard-interactive' : function(user, service, method, params) {/* jshint unused: false */
@@ -171,9 +171,9 @@ exports.sshd = function(options, authorizer, authenticator, channelizer) {
 
   function signBuffer(buffer) {
     var signer = crypto.createSign('RSA-SHA1');
+
     signer.write(buffer);
-    var signature = signer.sign(hostkey);
-    return composePacket(['ssh-rsa', signature]);
+    return composePacket(['ssh-rsa', signer.sign(hostkey)]);
   }
 
 net.createServer(function (conn) {
@@ -181,7 +181,7 @@ net.createServer(function (conn) {
   var session, cookie, deciph, cipher, macS, macC, user;
 
   var sendPay = function (payload) {
-    var padLen = (16-((5 + payload.length)%16))+16;
+    var padLen = (16 - ((5 + payload.length) % 16)) + 16;
     var buffer = new Buffer(5 + payload.length + padLen);
     var asdff, mac;
 
@@ -198,7 +198,7 @@ net.createServer(function (conn) {
       mac = new Buffer(mac.digest());
     }
 
-    logger.debug('write', { type: payload[0], length: payload.length });
+    logger.debug('write', { type: payload[0], length: payload.length, privacy: (!!cipher), authentication: (!!macLen) });
     if (cipher) buffer = cipher.update(buffer);
     if (macLen) buffer = Buffer.concat([buffer, mac]);
     conn.write(buffer);
@@ -230,7 +230,7 @@ net.createServer(function (conn) {
 
   var getPacket = function (packet) {
     var type = packet.getType();
-    var chan, channel, code, data, dhflags, e, i, method, msg, params, requestName, sha, wantReply;
+    var chan, channel, code, data, dhflags, e, i, method, msg, params, requestName, sha, wantDisplay, wantReply;
 
     var keyize = function (salt) {
       // TODO: dh.secret might need to be encoded for SSH
@@ -308,10 +308,10 @@ net.createServer(function (conn) {
       for (i = 0; i < result.prompts.length; i++) {
         message = result.prompts[i];
         if (typeof message === 'string') lang = 'en-US';
-        else { lang = message.lang, message = message.text; }
+        else { lang = message.lang; message = message.text; }
         sendPayload([ { byte : 53 }                                                 // SSH_MSG_USERAUTH_BANNER
-                    , message.text
-                    , message.lang
+                    , message
+                    , lang
                     ]);
       }
     };
@@ -339,13 +339,13 @@ net.createServer(function (conn) {
             break;
 
           case 'end':
-            sendPayload([ { byte : 98            }                                  // SSH_MSG_CHANNEL_REQUEST
+            sendPayload([ { byte   : 98          }                                  // SSH_MSG_CHANNEL_REQUEST
                         , { uint32 : chan        }
                         , 'exit-status'
                         , false
                         , { uint32 : params.code }
                         ]);
-            sendPayload([ { byte : 97            }                                  // SSH_MSG_CHANNEL_CLOSE
+            sendPayload([ { byte   : 97          }                                  // SSH_MSG_CHANNEL_CLOSE
                         , { uint32 : chan        }
                         ]);
             break;
@@ -382,6 +382,20 @@ net.createServer(function (conn) {
         code = packet.readUInt32();
         msg = packet.readString();
         logger.info('disconnect', { code: code, message: msg });
+        break;
+
+//   2 SSH_MSG_IGNORE
+      case 2:
+        packet.readString();
+        break;
+
+//   4 SSH_MSG_DEBUG
+      case 4:
+        wantDisplay = packet.readBool();
+        data = { text: packet.readString()
+               , lang: packet.readString()
+               };
+       if (wantDisplay) logger.info('debug', data); else logger.debug('debug', data);
         break;
 
 // SSH_MSG_KEXINIT
@@ -606,7 +620,7 @@ net.createServer(function (conn) {
             params = null;
             break;
         }
-        logger.info('channel', { chan: chan, type: type, wantReply: wantReply, params: params});
+        logger.info('channel', { chan: chan, type: type, wantReply: wantReply, params: params });
 
         if ((!!params) && (!!channels[chan]) && ((channels[chan])(chan, 'start', params))) {
           sendPayload([ { byte : 99 }                                               // SSH_MSG_CHANNEL_SUCCESS
@@ -621,6 +635,8 @@ net.createServer(function (conn) {
 
 // SSH_MSG_CHANNEL_WINDOW_ADJUST
       case 93:
+        packet.readUInt32();    // ignored for now....
+        packet.readUInt32();    // ignored for now....
         break;
 
 // SSH_MSG_CHANNEL_DATA
@@ -639,9 +655,7 @@ net.createServer(function (conn) {
         break;
 
 //   0 SSH_MSG_UNKNOWN
-//   2 SSH_MSG_IGNORE
 //   3 SSH_MSG_UNIMPLEMENTED
-//   4 SSH_MSG_DEBUG
 //  32 SSH_MSG_KEX_DH_GEX_INIT
 //  33 SSH_MSG_KEX_DH_GEX_REPLY
 // 100 SSH_MSG_CHANNEL_FAILURE
@@ -660,13 +674,23 @@ net.createServer(function (conn) {
                         , remoteAddress : conn.remoteAddress
                         , remotePort    : conn.remotePort
                         });
+
+  var header = 'SSH-2.0-sshd.js_0.0.1 Experimental, low-security SSHd implemented in NodeJS';
+  crypto.randomBytes(16, function (err, rand) {
+    logger.debug('server', { header: header });
+    conn.write(header + '\r\n');
+
+    cookie = rand;
+    sendPay(composePacket(twentyPacket()));
+  });
+
   conn.on('data', function (data) {
     if (data.toString('utf-8', 0, 4) === 'SSH-') {
       var eof = data.toString().indexOf('\n');
 
-      logger.debug('client', { header: data.toString('utf-8', 8, eof-1) });
-      hashIn.push(data.toString('utf8', 0, eof-1));
-      hashIn.push('SSH-2.0-sshd.js_0.0.1 Experimental, low-security SSHd implemented in NodeJS');
+      logger.debug('client', { header: data.toString('utf-8', 8, eof - 1) });
+      hashIn.push(data.toString('utf8', 0, eof - 1));
+      hashIn.push(header);
       data = data.slice(eof + 1);
     }
 
@@ -685,15 +709,5 @@ net.createServer(function (conn) {
 
     for (chan in channels) if (channels.hasOwnProperty(chan)) (channels[chan])(chan, 'close', err);
     channels = {};
-  });
-
-  crypto.randomBytes(16, function (err, rand) {
-    var header = 'SSH-2.0-sshd.js_0.0.1 Experimental, low-security SSHd implemented in NodeJS';
-
-    logger.debug('server', { header: header });
-    conn.write(header + '\r\n');
-
-    cookie = rand;
-    sendPay(composePacket(twentyPacket()));
   });
 }).listen(options.portno || 22); };
